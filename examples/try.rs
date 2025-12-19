@@ -12,7 +12,8 @@ async fn main() -> Result<(), Box<dyn Error>> {
 
     let kite = KiteConnect::new(api_key, access_token);
 
-    let instruments = vec![256265, 408065];
+    // let instruments = vec![256265]; // nifty 50
+    let instruments = vec![256265, 408065]; // infosys
 
     println!("Starting Backend Worker...");
 
