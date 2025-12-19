@@ -1,10 +1,12 @@
 use futures_util::{SinkExt, StreamExt};
 use tokio_tungstenite::{connect_async, tungstenite::protocol::Message};
+use tracing::{debug, error, info, instrument, trace};
 
 use crate::utils::parse_binary;
 
 pub mod models;
 mod utils;
+
 pub struct KiteConnect {
     api_key: String,
     access_token: String,
@@ -19,6 +21,7 @@ impl KiteConnect {
     }
 
     // match this to a socket connection
+    #[instrument(skip(self), name = "kite_stream")]
     pub async fn stream(&self, instruments: &[u32]) -> Result<(), Box<dyn std::error::Error>> {
         let url = format!(
             "wss://ws.kite.trade/?api_key={}&access_token={}",
@@ -26,9 +29,9 @@ impl KiteConnect {
             self.access_token.trim()
         );
 
-        println!("[*] Connecting to Kite Ticker...");
+        debug!("Attempting to connect to Kite Ticker...");
         let (ws_stream, _) = connect_async(&url).await?;
-        println!("[+] Connected!");
+        info!("Connected to Kite Ticker WebSocket");
 
         let (mut write, mut read) = ws_stream.split();
 
@@ -37,6 +40,7 @@ impl KiteConnect {
             "a": "subscribe",
             "v": instruments
         });
+
         write.send(Message::Text(sub_msg.to_string())).await?;
 
         // Set Mode to Full (market depth + quotes) , FiX: Need flexibilty here
@@ -46,7 +50,7 @@ impl KiteConnect {
         });
         write.send(Message::Text(mode_msg.to_string())).await?;
 
-        println!("[+] Subscribed to instruments: {:?}", instruments);
+        info!(?instruments, "Subscribed to instruments");
 
         // Read Loop
         while let Some(msg) = read.next().await {
@@ -56,16 +60,16 @@ impl KiteConnect {
                     if bin.len() > 1 {
                         let ticks = parse_binary(&bin);
                         for tick in ticks {
-                            // fix 
-                            println!("{:?}", tick);
+                            // fix
+                            trace!(?tick, "Received tick");
                         }
                     }
                 }
                 Ok(Message::Close(_)) => {
-                    println!("Connection closed by server.");
+                    info!("Connection closed by server.");
                     break;
                 }
-                Err(e) => eprintln!("WebSocket Error: {}", e),
+                Err(e) => error!(%e, "WebSocket Error encountered"),
                 _ => {}
             }
         }
