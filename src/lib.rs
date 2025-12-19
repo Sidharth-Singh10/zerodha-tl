@@ -4,8 +4,9 @@ use tokio_stream::wrappers::ReceiverStream;
 use tokio_tungstenite::{connect_async, tungstenite::protocol::Message};
 use tracing::{debug, error, info, instrument, trace};
 
-use crate::utils::parse_binary;
+use crate::{config::StreamConfig, utils::parse_binary};
 
+pub mod config;
 pub mod models;
 mod utils;
 
@@ -26,7 +27,7 @@ impl KiteConnect {
     #[instrument(skip(self), name = "kite_stream")]
     pub async fn stream(
         &self,
-        instruments: &[u32],
+        config: StreamConfig,
     ) -> Result<impl Stream<Item = crate::models::Tick>, Box<dyn std::error::Error>> {
         let url = format!(
             "wss://ws.kite.trade/?api_key={}&access_token={}",
@@ -43,7 +44,7 @@ impl KiteConnect {
         // Subscribe
         let sub_msg = serde_json::json!({
             "a": "subscribe",
-            "v": instruments
+            "v": config.instruments
         });
 
         write.send(Message::Text(sub_msg.to_string())).await?;
@@ -51,11 +52,15 @@ impl KiteConnect {
         // Set Mode to Full (market depth + quotes) , FiX: Need flexibilty here
         let mode_msg = serde_json::json!({
             "a": "mode",
-            "v": ["full", instruments]
+            "v": [config.mode, config.instruments]
         });
         write.send(Message::Text(mode_msg.to_string())).await?;
 
-        info!(?instruments, "Subscribed to instruments");
+        info!(
+            instruments = ?config.instruments,
+            mode = ?config.mode,
+            "Subscribed to instruments"
+        );
 
         // Create a channel to bridge the background task and the user
         let (tx, rx) = mpsc::channel(1024);
