@@ -1,4 +1,6 @@
-use futures_util::{SinkExt, StreamExt};
+use futures_util::{SinkExt, Stream, StreamExt};
+use tokio::sync::mpsc;
+use tokio_stream::wrappers::ReceiverStream;
 use tokio_tungstenite::{connect_async, tungstenite::protocol::Message};
 use tracing::{debug, error, info, instrument, trace};
 
@@ -22,7 +24,10 @@ impl KiteConnect {
 
     // match this to a socket connection
     #[instrument(skip(self), name = "kite_stream")]
-    pub async fn stream(&self, instruments: &[u32]) -> Result<(), Box<dyn std::error::Error>> {
+    pub async fn stream(
+        &self,
+        instruments: &[u32],
+    ) -> Result<impl Stream<Item = crate::models::Tick>, Box<dyn std::error::Error>> {
         let url = format!(
             "wss://ws.kite.trade/?api_key={}&access_token={}",
             self.api_key.trim(),
@@ -52,28 +57,41 @@ impl KiteConnect {
 
         info!(?instruments, "Subscribed to instruments");
 
-        // Read Loop
-        while let Some(msg) = read.next().await {
-            match msg {
-                Ok(Message::Binary(bin)) => {
-                    // Ignore heartbeat (1 byte)
-                    if bin.len() > 1 {
-                        let ticks = parse_binary(&bin);
-                        for tick in ticks {
-                            // fix
-                            trace!(?tick, "Received tick");
+        // Create a channel to bridge the background task and the user
+        let (tx, rx) = mpsc::channel(1024);
+
+        // Spawn the Read Loop in the background
+        tokio::spawn(async move {
+            // moving write into the task to keep the connection alive.. Hack ????
+            let _write_guard = write;
+
+            while let Some(msg) = read.next().await {
+                match msg {
+                    Ok(Message::Binary(bin)) => {
+                        // Ignore heartbeat (1 byte)
+                        if bin.len() > 1 {
+                            let ticks = parse_binary(&bin);
+                            for tick in ticks {
+                                trace!(?tick, "Received tick");
+
+                                // Send to user. If receiver is dropped, stop loop.
+                                if tx.send(tick).await.is_err() {
+                                    debug!("User dropped the stream, closing connection.");
+                                    return;
+                                }
+                            }
                         }
                     }
+                    Ok(Message::Close(_)) => {
+                        info!("Connection closed by server.");
+                        break;
+                    }
+                    Err(e) => error!(%e, "WebSocket Error encountered"),
+                    _ => {}
                 }
-                Ok(Message::Close(_)) => {
-                    info!("Connection closed by server.");
-                    break;
-                }
-                Err(e) => error!(%e, "WebSocket Error encountered"),
-                _ => {}
             }
-        }
+        });
 
-        Ok(())
+        Ok(ReceiverStream::new(rx))
     }
 }
